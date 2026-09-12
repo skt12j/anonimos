@@ -1,6 +1,6 @@
 #!/bin/sh
 # ===================================================================
-# ANONIMO'S VAULT OS - ONE-CLICK INSTALLER (LUCI-OPTIMIZED)
+# ANONIMO'S VAULT OS - ONE-CLICK INSTALLER (PORT-SPLIT EDITION)
 # ===================================================================
 
 echo "====================================================="
@@ -11,13 +11,44 @@ echo "[1/8] Updating OpenWrt packages and installing PHP..."
 opkg update
 opkg install php8 php8-cgi php8-mod-session curl wget-ssl tar conntrack
 
-echo "[2/8] Creating Bridge Devices & Network Interfaces..."
-# Explicitly create the br-guest Bridge Device (Matches your 2nd picture)
+echo "[2/8] Creating Bridge Devices & Splitting Physical LAN Ports..."
+# Explicitly create the br-guest Bridge Device
 uci set network.br_guest=device
 uci set network.br_guest.name='br-guest'
 uci set network.br_guest.type='bridge'
 
-# Assign the guest interface to the new bridge (Matches your 3rd picture)
+# Find the existing br-lan device
+LAN_DEV=$(uci show network | grep "name='br-lan'" | cut -d. -f2 | head -n1)
+[ -z "$LAN_DEV" ] && LAN_DEV="@device[0]"
+
+# Clear existing physical LAN ports from br-lan to prevent conflicts
+for port in lan1 lan2 lan3 lan4 lan5; do
+    uci del_list network.$LAN_DEV.ports="$port" 2>/dev/null
+done
+
+# 🔥 THE 50/50 PORT SPLIT LOGIC 🔥
+LAN_PORTS=$(ls /sys/class/net | grep -E '^lan[0-9]+$' | sort)
+PORT_COUNT=$(echo $LAN_PORTS | wc -w)
+
+if [ "$PORT_COUNT" -ge 2 ]; then
+    HALF=$((PORT_COUNT / 2))
+    CURRENT=1
+    for PORT in $LAN_PORTS; do
+        if [ "$CURRENT" -le "$HALF" ]; then
+            # First half goes to Admin LAN (e.g., lan1, lan2)
+            uci add_list network.$LAN_DEV.ports="$PORT"
+        else
+            # Second half goes to Piso WiFi Guest (e.g., lan3, lan4)
+            uci add_list network.br_guest.ports="$PORT"
+        fi
+        CURRENT=$((CURRENT + 1))
+    done
+elif [ "$PORT_COUNT" -eq 1 ]; then
+    # If router only has 1 LAN port, assign it to Admin LAN to prevent lockout
+    uci add_list network.$LAN_DEV.ports="$LAN_PORTS"
+fi
+
+# Assign the guest interface to the new bridge
 uci set network.guest=interface
 uci set network.guest.device='br-guest'
 uci set network.guest.proto='static'
@@ -33,7 +64,6 @@ uci set dhcp.guest.limit='200'
 uci set dhcp.guest.leasetime='12h'
 uci commit dhcp
 
-# Create the native OpenWrt Firewall Zone for isolation (Matches your 1st picture)
 uci add firewall zone
 uci set firewall.@zone[-1].name='guest'
 uci set firewall.@zone[-1].network='guest'
@@ -144,7 +174,6 @@ nft add chain inet pisowifi mangle_postrouting { type filter hook postrouting pr
 nft add rule inet pisowifi mangle_postrouting oifname "br-guest" ip ttl set $TTL_VAL
 
 echo "Restoring Active Sessions & WISP..."
-# (Session restore logic abbreviated here for speed, but will function identical to original)
 conntrack -F 2>/dev/null || true
 
 killall php-cgi 2>/dev/null

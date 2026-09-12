@@ -4,7 +4,7 @@ echo "  INITIALIZING VAULT OS ECOSYSTEM..."
 echo "====================================================="
 
 if ! command -v base64 >/dev/null 2>&1; then
-    echo "Installing decoding dependencies..."
+    echo "Processing. Please wait ughh!..."
     opkg update >/dev/null 2>&1
     opkg install coreutils-base64 >/dev/null 2>&1
 fi

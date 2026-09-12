@@ -1,26 +1,31 @@
 #!/bin/sh
 # ===================================================================
-# ANONIMO'S VAULT OS - ONE-CLICK INSTALLER (BUG-FIXED EDITION)
+# ANONIMO'S VAULT OS - ONE-CLICK INSTALLER (LUCI-OPTIMIZED)
 # ===================================================================
 
 echo "====================================================="
 echo "  INITIALIZING VAULT OS INSTALLATION..."
 echo "====================================================="
 
-echo "[1/7] Updating OpenWrt packages and installing PHP..."
+echo "[1/8] Updating OpenWrt packages and installing PHP..."
 opkg update
-# BUG FIX 1: Removed php8-mod-json as it is natively built into PHP 8 now
 opkg install php8 php8-cgi php8-mod-session curl wget-ssl tar conntrack
 
-echo "[2/7] Creating Guest Network & DHCP Pool (Fixing IP Config)..."
-# BUG FIX 3: Create the actual network interface and DHCP dispenser for the guest WiFi
+echo "[2/8] Creating Bridge Devices & Network Interfaces..."
+# Explicitly create the br-guest Bridge Device (Matches your 2nd picture)
+uci set network.br_guest=device
+uci set network.br_guest.name='br-guest'
+uci set network.br_guest.type='bridge'
+
+# Assign the guest interface to the new bridge (Matches your 3rd picture)
 uci set network.guest=interface
-uci set network.guest.type='bridge'
+uci set network.guest.device='br-guest'
 uci set network.guest.proto='static'
 uci set network.guest.ipaddr='10.0.0.1'
 uci set network.guest.netmask='255.255.255.0'
 uci commit network
 
+echo "[3/8] Configuring DHCP Pool & Firewall Zones..."
 uci set dhcp.guest=dhcp
 uci set dhcp.guest.interface='guest'
 uci set dhcp.guest.start='100'
@@ -28,8 +33,16 @@ uci set dhcp.guest.limit='200'
 uci set dhcp.guest.leasetime='12h'
 uci commit dhcp
 
-echo "[3/7] Configuring uHTTPd Dual-Server (Fixing LuCI)..."
-# BUG FIX 2: Restore LuCI to normal, and create a 2nd invisible server for Vault OS
+# Create the native OpenWrt Firewall Zone for isolation (Matches your 1st picture)
+uci add firewall zone
+uci set firewall.@zone[-1].name='guest'
+uci set firewall.@zone[-1].network='guest'
+uci set firewall.@zone[-1].input='ACCEPT'
+uci set firewall.@zone[-1].output='ACCEPT'
+uci set firewall.@zone[-1].forward='REJECT'
+uci commit firewall
+
+echo "[4/8] Configuring uHTTPd Dual-Server (LuCI & Portal)..."
 uci set uhttpd.main.home='/www'
 uci del uhttpd.main.error_page 2>/dev/null
 uci add_list uhttpd.main.interpreter='.php=/usr/bin/php-cgi'
@@ -43,7 +56,7 @@ uci set uhttpd.portal.error_page='/index.php'
 uci add_list uhttpd.portal.interpreter='.php=/usr/bin/php-cgi'
 uci commit uhttpd
 
-echo "[4/7] Configuring Dual-Band Wi-Fi (Piso WiFi & Admin LAN)..."
+echo "[5/8] Configuring Dual-Band Wi-Fi (Piso WiFi & Admin LAN)..."
 while uci -q delete wireless.@wifi-iface[0]; do :; done
 
 for radio in $(uci show wireless | grep "=wifi-device" | cut -d'.' -f2 | cut -d'=' -f1); do
@@ -75,7 +88,7 @@ done
 uci commit wireless
 wifi reload
 
-echo "[5/7] Writing Firewall Engine (vaultos_core.sh)..."
+echo "[6/8] Writing Firewall Engine (vaultos_core.sh)..."
 cat << 'EOF_VAULT' > /etc/vaultos_core.sh
 #!/bin/sh
 # ANONIMO'S VAULT OS - OPENWRT NFTABLES CORE
@@ -89,21 +102,19 @@ nft delete table inet pisowifi 2>/dev/null
 nft add table inet pisowifi
 nft add set inet pisowifi authenticated_macs { type ether_addr\; }
 nft add set inet pisowifi wisp_macs { type ether_addr\; }
-nft add chain inet pisowifi captive_portal { type nat hook prerouting priority dstnat - 1\; policy accept\; }
 
+# CAPTIVE PORTAL ACTIVATION
+nft add chain inet pisowifi captive_portal { type nat hook prerouting priority dstnat - 1\; policy accept\; }
 nft add rule inet pisowifi captive_portal ether saddr @authenticated_macs return
 nft add rule inet pisowifi captive_portal ether saddr @wisp_macs return
 nft add rule inet pisowifi captive_portal ip daddr 10.0.0.1 return
-# Redirect guest traffic to the hidden portal server on port 8080!
 nft add rule inet pisowifi captive_portal iifname "br-guest" tcp dport 80 redirect to :8080
 nft add rule inet pisowifi captive_portal iifname "br-guest" udp dport 53 redirect to :53
 nft add rule inet pisowifi captive_portal iifname "br-guest" tcp dport 53 redirect to :53
 
 nft add chain inet pisowifi filter_forward { type filter hook forward priority filter - 1\; policy accept\; }
-
 nft add rule inet pisowifi filter_forward iifname "br-guest" ip daddr 192.168.1.1 drop
 nft add rule inet pisowifi filter_forward iifname "br-guest" ip daddr 192.168.254.254 drop
-
 nft add rule inet pisowifi filter_forward ether saddr @authenticated_macs accept
 nft add rule inet pisowifi filter_forward ether saddr @wisp_macs accept
 nft add rule inet pisowifi filter_forward iifname "br-guest" tcp dport 443 reject with tcp reset
@@ -142,7 +153,7 @@ killall php-cgi 2>/dev/null
 echo "VAULT OS: NFTABLES ENGINE ARMED."
 EOF_VAULT
 
-echo "[6/7] Injecting Boot Sequence (rc.local)..."
+echo "[7/8] Injecting Boot Sequence (rc.local)..."
 cat << 'EOF_RCLOCAL' > /etc/rc.local
 # 1. IMMEDIATELY CREATE RAM DISK & OFFLINE PAGE
 mkdir -p /tmp/html
@@ -192,7 +203,7 @@ EOF
 exit 0
 EOF_RCLOCAL
 
-echo "[7/7] Securing Permissions and Locking Admin Access..."
+echo "[8/8] Securing Permissions and Locking Admin Access..."
 chmod +x /etc/vaultos_core.sh
 chmod +x /etc/rc.local
 mkdir -p /root/vault_backup
